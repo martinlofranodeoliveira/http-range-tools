@@ -45,11 +45,25 @@ A CLI imprime JSON com inteiros exatos, inclusive para números muito grandes:
 
 | Código de saída | Significado |
 |---:|---|
-| 0 | Pelo menos um membro satisfatível; JSON em stdout |
+| 0 | Sintaxe válida com `--parse-only`, ou pelo menos um membro satisfatível no modo de resolução; JSON em stdout |
 | 1 | Campo válido, mas todos os membros insatisfatíveis; JSON em stdout |
 | 2 | Erro de entrada; mensagem em stderr e stdout vazio |
 
 Erros de análise usam JSON com `error.code`: `invalid_range`, `limit_exceeded` ou `unsupported_unit`. Erros de argumentos mostram a ajuda de uso. Na API, esses códigos correspondem a `RangeSyntaxError`, `RangeLimitError` e `UnsupportedRangeUnit`, subclasses de `RangeError`. A unidade desconhecida fica em `.unit`, em minúsculas. Mensagens textuais podem mudar.
+
+A CLI exige o argumento do campo e exatamente uma das opções `--size` ou `--parse-only`. Para inspecionar a sintaxe sem conhecer o tamanho da representação:
+
+```sh
+http-range-tools --parse-only 'BYTES=,0002-0004,8-,-3,'
+```
+
+```json
+{"unit":"bytes","ranges":[{"type":"closed","first":2,"last":4},{"type":"open","first":8},{"type":"suffix","length":3}]}
+```
+
+Nesse formato, intervalos fechados possuem `first` e `last` inclusivos; intervalos abertos possuem `first`; sufixos possuem `length`. A ordem e as repetições são preservadas, zeros à esquerda são normalizados e os mesmos limites de campo e membros são aplicados. Os inteiros grandes continuam exatos no JSON.
+
+O modo `--parse-only` verifica a sintaxe sem calcular fatias nem determinar se os intervalos são satisfatíveis. O JSON não contém `size` nem `satisfiable`; por isso, `bytes=-0` válido sai com código 0 nesse modo. Erros de análise ou argumentos saem com código 2; esse modo nunca sai com código 1. As opções `--parse-only` e `--size` são mutuamente exclusivas. A CLI não lê stdin, arquivos, rede ou configuração do ambiente.
 
 Tamanhos e limites devem ser inteiros; Booleanos são rejeitados. Tamanho negativo gera `ValueError`, tipo incorreto gera `TypeError`. Esses erros nunca viram um resultado insatisfatível.
 

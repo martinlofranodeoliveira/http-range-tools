@@ -34,6 +34,72 @@ class CliTests(unittest.TestCase):
                          {"size": 12, "ranges": [], "satisfiable": False, "unsatisfied_count": 2})
         self.assertEqual(process.stderr, "")
 
+    def test_parse_only_json_preserves_forms_order_and_duplicates(self):
+        process = self.run_cli("--parse-only", "BYTES=,0002-0004,0008-,-003,0002-0004,")
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(process.stderr, "")
+        self.assertEqual(json.loads(process.stdout), {
+            "unit": "bytes",
+            "ranges": [{"type": "closed", "first": 2, "last": 4},
+                       {"type": "open", "first": 8},
+                       {"type": "suffix", "length": 3},
+                       {"type": "closed", "first": 2, "last": 4}],
+        })
+        self.assertTrue(process.stdout.endswith("\n"))
+
+    def test_parse_only_zero_suffix_is_valid_syntax(self):
+        process = self.run_cli("--parse-only", "bytes=-0")
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(process.stderr, "")
+        self.assertEqual(json.loads(process.stdout),
+                         {"unit": "bytes", "ranges": [{"type": "suffix", "length": 0}]})
+
+    def test_parse_only_error_codes_and_limits(self):
+        cases = (("bytes=3-2", "invalid_range", []),
+                 ("items=foo", "unsupported_unit", []),
+                 ("bytes=0-0,1-1", "limit_exceeded", ["--max-ranges", "1"]),
+                 ("bytes=0-0", "limit_exceeded", ["--max-header-length", "8"]))
+        for header, code, options in cases:
+            with self.subTest(header=header, options=options):
+                process = self.run_cli("--parse-only", *options, header)
+                self.assertEqual(process.returncode, 2)
+                self.assertEqual(process.stdout, "")
+                error = json.loads(process.stderr)["error"]
+                self.assertEqual(error["code"], code)
+                self.assertTrue(error["message"])
+                self.assertNotIn("Traceback", process.stderr)
+        process = self.run_cli("--parse-only", "--max-ranges", "2",
+                               "--max-header-length", "13", "bytes=0-0,1-1")
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(len(json.loads(process.stdout)["ranges"]), 2)
+
+    def test_parse_only_argument_errors(self):
+        cases = (["--parse-only"],
+                 ["--parse-only", "--size", "12", "bytes=0-0"],
+                 ["--size", "0", "--parse-only", "bytes=-1"],
+                 ["--parse-only", "--max-ranges", "0", "bytes=0-0"])
+        for args in cases:
+            with self.subTest(args=args):
+                process = self.run_cli(*args)
+                self.assertEqual(process.returncode, 2)
+                self.assertEqual(process.stdout, "")
+                self.assertIn("usage:", process.stderr)
+                self.assertNotIn("Traceback", process.stderr)
+
+    def test_parse_only_huge_integers_stay_exact_json_numbers(self):
+        huge = "9" * 5000
+        cases = (("bytes=0-" + huge, {"type": "closed", "first": "0", "last": huge}),
+                 ("bytes=" + huge + "-", {"type": "open", "first": huge}),
+                 ("bytes=-" + huge, {"type": "suffix", "length": huge}))
+        for header, expected in cases:
+            with self.subTest(form=expected["type"]):
+                process = self.run_cli("--parse-only", header)
+                self.assertEqual(process.returncode, 0, process.stderr)
+                self.assertEqual(process.stderr, "")
+                self.assertEqual(json.loads(process.stdout, parse_int=str),
+                                 {"unit": "bytes", "ranges": [expected]})
+                self.assertNotIn('"' + huge + '"', process.stdout)
+
     def test_empty_positive_suffix_exit_zero(self):
         process = self.run_cli("--size", "0", "bytes=-1")
         self.assertEqual(process.returncode, 0)

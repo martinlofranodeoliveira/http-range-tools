@@ -41,11 +41,27 @@ The first CLI example prints:
 
 | Exit | Meaning | Output |
 |---:|---|---|
-| 0 | At least one member is satisfiable | Resolution JSON on stdout |
+| 0 | Valid syntax in `--parse-only`, or at least one member is satisfiable in resolution mode | Mode's JSON on stdout |
 | 1 | Valid byte range set, all members unsatisfiable | Resolution JSON on stdout |
 | 2 | Syntax, unsupported unit, resource bound, or argument error | Error on stderr; stdout empty |
 
-Parser errors use `{"error":{"code":"invalid_range","message":"…"}}`; other stable codes are `limit_exceeded` and `unsupported_unit`. Argument errors use ordinary usage text. JSON integers stay exact for huge numbers; consumers need a suitable integer representation. The CLI accepts a required header argument and `--size`, with no implicit stdin, files, network, or environment configuration.
+Parser errors use `{"error":{"code":"invalid_range","message":"…"}}`; other stable codes are `limit_exceeded` and `unsupported_unit`. Argument errors use ordinary usage text. JSON integers stay exact for huge numbers; consumers need a suitable integer representation. The CLI accepts a required header argument and exactly one of `--size` or `--parse-only`, with no implicit stdin, files, network, or environment configuration.
+
+### Inspect syntax without a size
+
+Use `--parse-only` to inspect a header when the representation size is unknown:
+
+```sh
+http-range-tools --parse-only 'BYTES=,0002-0004,8-,-3,'
+```
+
+```json
+{"unit":"bytes","ranges":[{"type":"closed","first":2,"last":4},{"type":"open","first":8},{"type":"suffix","length":3}]}
+```
+
+The parse schema describes the requested members: closed ranges have inclusive `first` and `last` offsets, open ranges have `first`, and suffix ranges have `length`. It preserves order and duplicates, normalizes leading zeros, and applies the same header and member limits as resolution mode. Huge integers remain exact JSON numbers.
+
+Parse mode checks syntax without resolving slices or determining satisfiability; its JSON contains neither `size` nor `satisfiable`. A valid `bytes=-0` therefore exits 0 in this mode. Parser and argument errors exit 2; parse mode never exits 1. `--parse-only` and `--size` are mutually exclusive.
 
 ## API
 

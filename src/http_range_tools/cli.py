@@ -7,7 +7,10 @@ import json
 import sys
 from collections.abc import Sequence
 
-from .core import RangeError, RangeResult, _format_decimal, _parse_decimal, resolve_range
+from .core import (
+    ClosedRange, OpenRange, RangeError, RangeResult, RangeSpec,
+    _format_decimal, _parse_decimal, parse_range, resolve_range,
+)
 
 
 def _size_argument(value: str) -> int:
@@ -43,31 +46,56 @@ def _result_json(result: RangeResult) -> str:
     )
 
 
+def _parsed_json(specs: Sequence[RangeSpec]) -> str:
+    parts = []
+    for spec in specs:
+        if isinstance(spec, ClosedRange):
+            parts.append('{"type":"closed","first":' + _format_decimal(spec.first)
+                         + ',"last":' + _format_decimal(spec.last) + '}')
+        elif isinstance(spec, OpenRange):
+            parts.append('{"type":"open","first":' + _format_decimal(spec.first) + '}')
+        else:
+            parts.append('{"type":"suffix","length":' + _format_decimal(spec.length) + '}')
+    return '{"unit":"bytes","ranges":[' + ",".join(parts) + ']}'
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="http-range-tools",
-        description="Resolve one HTTP byte Range field offline as half-open JSON slices.",
+        description="Parse or resolve one HTTP byte Range field offline as JSON.",
         epilog=(
-            "Exit codes: 0 satisfiable, 1 valid but unsatisfiable, 2 input error. "
+            "Exit codes: 0 valid parse-only input or satisfiable resolution, "
+            "1 valid but unsatisfiable resolution, 2 input error. "
             "The default header bound is 8192 ASCII characters and 16 nonempty ranges; "
             "at most 16 empty comma members are ignored. No files or network are read."
         ),
     )
     parser.add_argument("header", help="Range field value, for example 'bytes=2-4,-2'")
-    parser.add_argument("--size", required=True, type=_size_argument,
-                        help="representation byte size: 1–8192 ASCII decimal digits")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--size", type=_size_argument,
+                      help="resolve against a byte size: 1–8192 ASCII decimal digits")
+    mode.add_argument("--parse-only", action="store_true",
+                      help="inspect range syntax without a size or satisfiability check")
     parser.add_argument("--max-header-length", type=_limit_argument, default=8192,
                         help="maximum untrimmed header characters (default: 8192)")
     parser.add_argument("--max-ranges", type=_limit_argument, default=16,
                         help="maximum nonempty range members (default: 16)")
     args = parser.parse_args(argv)
     try:
-        result = resolve_range(args.header, args.size,
-                               max_header_length=args.max_header_length,
-                               max_ranges=args.max_ranges)
+        if args.parse_only:
+            specs = parse_range(args.header, max_header_length=args.max_header_length,
+                                max_ranges=args.max_ranges)
+            output = _parsed_json(specs)
+            exit_code = 0
+        else:
+            result = resolve_range(args.header, args.size,
+                                   max_header_length=args.max_header_length,
+                                   max_ranges=args.max_ranges)
+            output = _result_json(result)
+            exit_code = 0 if result.satisfiable else 1
     except RangeError as error:
         print(json.dumps({"error": {"code": error.code, "message": str(error)}},
                          ensure_ascii=True, separators=(",", ":")), file=sys.stderr)
         return 2
-    print(_result_json(result))
-    return 0 if result.satisfiable else 1
+    print(output)
+    return exit_code
