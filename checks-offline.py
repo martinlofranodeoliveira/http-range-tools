@@ -11,14 +11,17 @@ trusted bubblewrap namespace bootstrap, never the tested Python process.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import re
 import resource
 import shutil
+import stat
 import subprocess
 import sys
 import sysconfig
+import tempfile
 
 
 _RUNNER = r'''
@@ -47,6 +50,8 @@ if any(Path(p).exists() for p in ("/dev/dri", "/dev/nvidia0", "/dev/kfd")):
     raise SystemExit("Sandbox must not expose GPU devices")
 print("Isolation verified: CapEff=0 NoNewPrivs=1; separate network; no home/.git/GPU", flush=True)
 print("Sandbox identity:", expected_uid, expected_gid, flush=True)
+print("Sandbox UID map:", " ".join(Path("/proc/self/uid_map").read_text().split()), flush=True)
+print("Sandbox GID map:", " ".join(Path("/proc/self/gid_map").read_text().split()), flush=True)
 package_root = Path(sys.argv[2])
 sys.path.insert(0, str(package_root))
 package = importlib.import_module("http_range_tools")
@@ -79,6 +84,71 @@ def _limits() -> None:
     resource.setrlimit(resource.RLIMIT_CPU, (60, 60))
     resource.setrlimit(resource.RLIMIT_FSIZE, (8 * 1024 * 1024, 8 * 1024 * 1024))
     resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))
+
+
+@contextmanager
+def _public_sources(sources: dict[Path, Path], enabled: bool):
+    """Stage only preflighted public trees outside private runner-home paths."""
+    if not enabled:
+        yield sources
+        return
+
+    plans = {}
+    entry_count = total_bytes = 0
+    # Complete validation before creating/chmodding/copying any staged input.
+    for source in sources:
+        entries = []
+        pending = [(source, Path("."))]
+        while pending:
+            path, relative = pending.pop()
+            metadata = path.lstat()
+            if relative != Path(".") and path.name.startswith("."):
+                raise ValueError("Hidden entries are not public sandbox input")
+            if not stat.S_ISDIR(metadata.st_mode) and not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("Public sandbox input must contain only real directories and regular files")
+            entry_count += 1
+            if entry_count > 256 or len(relative.parts) > 16:
+                raise ValueError("Public sandbox input exceeds its entry/depth bound")
+            if stat.S_ISREG(metadata.st_mode):
+                total_bytes += metadata.st_size
+                if total_bytes > 8 * 1024 * 1024:
+                    raise ValueError("Public sandbox input exceeds its 8 MiB bound")
+            else:
+                for child in path.iterdir():
+                    pending.append((child, relative / child.name))
+                    if entry_count + len(pending) > 256:
+                        raise ValueError("Public sandbox input exceeds its entry bound")
+            entries.append((relative, metadata))
+        plans[source] = entries
+
+    # Explicit /tmp avoids RUNNER_TEMP/TMPDIR underneath a 0700 runner home.
+    # Only these disposable public copies become world-readable/traversable.
+    with tempfile.TemporaryDirectory(prefix="http-range-tools-public-", dir="/tmp") as temporary:
+        base = Path(temporary)
+        base.chmod(0o755)
+        staged = {}
+        for source, destination in sources.items():
+            public = base / destination.name
+            for relative, metadata in plans[source]:
+                target = public / relative
+                if stat.S_ISDIR(metadata.st_mode):
+                    target.mkdir(mode=0o755)
+                    target.chmod(0o755)
+                    continue
+                descriptor = os.open(source / relative, os.O_RDONLY | os.O_NOFOLLOW)
+                with os.fdopen(descriptor, "rb") as stream:
+                    current = os.fstat(stream.fileno())
+                    if (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns) != (
+                        metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns
+                    ) or not stat.S_ISREG(current.st_mode):
+                        raise ValueError("Public input changed during staging")
+                    data = stream.read(metadata.st_size + 1)
+                    if len(data) != metadata.st_size:
+                        raise ValueError("Public input changed during staging")
+                target.write_bytes(data)
+                target.chmod(0o644)
+            staged[public] = destination
+        yield staged
 
 
 def main() -> int:
@@ -145,10 +215,6 @@ def main() -> int:
         print("Use a system Python runtime outside user home directories.", file=sys.stderr)
         return 2
 
-    mounts = {**runtime, **sources}
-    directories = {Path("/workspace"), Path("/tmp"), Path("/proc"), Path("/dev")}
-    for destination in mounts.values():
-        directories.update(parent for parent in destination.parents if parent != Path("/"))
     launcher = [bwrap]
     identity = []
     if options.github_hosted_runner:
@@ -159,26 +225,34 @@ def main() -> int:
             parser.error("hosted bootstrap requires /usr/bin/bwrap and /usr/bin/sudo")
         launcher = ["/usr/bin/sudo", "-n", "--", "/usr/bin/bwrap"]
         identity = ["--uid", str(os.getuid()), "--gid", str(os.getgid())]
-    args = [*launcher, "--die-with-parent", "--new-session", "--unshare-all",
-            *identity, "--cap-drop", "ALL", "--clearenv"]
-    for directory in sorted(directories, key=lambda path: (len(path.parts), str(path))):
-        args.extend(["--dir", str(directory)])
-    for source, destination in sorted(mounts.items(), key=lambda item: str(item[1])):
-        args.extend(["--ro-bind", str(source), str(destination)])
-    args.extend([
-        "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
-        "--setenv", "PATH", str(executable.parent),
-        "--setenv", "LD_LIBRARY_PATH", ":".join(sorted(library_directories)),
-        "--setenv", "PYTHONPATH", str(package_root),
-        "--setenv", "PYTHONDONTWRITEBYTECODE", "1",
-        "--setenv", "LC_ALL", "C.UTF-8", "--chdir", "/workspace",
-        str(executable), "-I", "-S", "-B", "-c", _RUNNER,
-        os.readlink("/proc/self/ns/net"), str(package_root), str(os.getuid()), str(os.getgid()),
-    ])
     try:
-        return subprocess.run(args, timeout=90, preexec_fn=_limits, check=False).returncode
+        with _public_sources(sources, options.github_hosted_runner) as public_sources:
+            mounts = {**runtime, **public_sources}
+            directories = {Path("/workspace"), Path("/tmp"), Path("/proc"), Path("/dev")}
+            for destination in mounts.values():
+                directories.update(parent for parent in destination.parents if parent != Path("/"))
+            args = [*launcher, "--die-with-parent", "--new-session", "--unshare-all",
+                    *identity, "--cap-drop", "ALL", "--clearenv"]
+            for directory in sorted(directories, key=lambda path: (len(path.parts), str(path))):
+                args.extend(["--dir", str(directory)])
+            for source, destination in sorted(mounts.items(), key=lambda item: str(item[1])):
+                args.extend(["--ro-bind", str(source), str(destination)])
+            args.extend([
+                "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+                "--setenv", "PATH", str(executable.parent),
+                "--setenv", "LD_LIBRARY_PATH", ":".join(sorted(library_directories)),
+                "--setenv", "PYTHONPATH", str(package_root),
+                "--setenv", "PYTHONDONTWRITEBYTECODE", "1",
+                "--setenv", "LC_ALL", "C.UTF-8", "--chdir", "/workspace",
+                str(executable), "-I", "-S", "-B", "-c", _RUNNER,
+                os.readlink("/proc/self/ns/net"), str(package_root), str(os.getuid()), str(os.getgid()),
+            ])
+            return subprocess.run(args, timeout=90, preexec_fn=_limits, check=False).returncode
     except subprocess.TimeoutExpired:
         print("Offline checks exceeded their 90-second limit.", file=sys.stderr)
+        return 2
+    except (OSError, ValueError) as error:
+        print(f"Public sandbox setup failed: {error}", file=sys.stderr)
         return 2
 
 
