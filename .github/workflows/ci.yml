@@ -22,11 +22,11 @@ jobs:
       - name: Ensure bubblewrap exists on this ephemeral runner
         run: |
           if ! command -v bwrap >/dev/null; then
-            sudo apt-get update
-            sudo apt-get install --no-install-recommends -y bubblewrap
+            sudo -n apt-get update
+            sudo -n apt-get install --no-install-recommends -y bubblewrap
           fi
       - name: Isolated tests and examples
-        run: python checks-offline.py
+        run: python checks-offline.py --github-hosted-runner
       - name: Build and stage the package on this ephemeral runner
         run: |
           python -m pip install --upgrade setuptools wheel
@@ -34,4 +34,4 @@ jobs:
           package_dir=$(mktemp -d "$RUNNER_TEMP/http-range-tools-package.XXXXXX")
           python -m pip wheel --no-deps --no-build-isolation --wheel-dir "$wheel_dir" .
           python -m pip install --no-deps --no-compile --target "$package_dir" "$wheel_dir"/*.whl
-          python checks-offline.py --installed-package "$package_dir"
+          python checks-offline.py --github-hosted-runner --installed-package "$package_dir"

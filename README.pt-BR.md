@@ -76,6 +76,8 @@ O executor monta somente o runtime Python e os diretórios públicos de código,
 
 Para verificar um wheel já preparado com `pip install --no-deps --target DIRETORIO_TEMPORARIO pacote.whl`, execute `python checks-offline.py --installed-package DIRETORIO_TEMPORARIO`. O diretório deve ser novo. Esse modo omite `src`, confirma a origem do módulo importado e executa os mesmos testes, exemplos e comando instalado dentro do isolamento. A CI prepara o wheel e o diretório temporário antes dessa etapa; instruções completas estão no README em inglês.
 
+A CI em runners Linux hospedados pelo GitHub seleciona explicitamente `--github-hosted-runner`. Após conferir o ambiente, esse modo usa `sudo -n` somente para o bootstrap do bubblewrap do sistema, antes de criar os namespaces. A execução testada mantém os namespaces, a rede isolada e as montagens de leitura; antes de importar o pacote, confirma o UID/GID numérico do runner, capacidades efetivas zeradas e `NoNewPrivs=1`. Nenhuma configuração global de sysctl ou AppArmor é alterada. Esse modo é exclusivo dos runners efêmeros hospedados pelo GitHub; a execução local continua sem sudo.
+
 Implementação original com referência ao [RFC 9110 §14.1.1](https://www.rfc-editor.org/rfc/rfc9110.html#section-14.1.1), [§14.1.2](https://www.rfc-editor.org/rfc/rfc9110.html#section-14.1.2), [§14.2](https://www.rfc-editor.org/rfc/rfc9110.html#section-14.2), [§5.6.1](https://www.rfc-editor.org/rfc/rfc9110.html#section-5.6.1) e [§5.6.3](https://www.rfc-editor.org/rfc/rfc9110.html#section-5.6.3). Nenhum texto ou código do RFC foi copiado. As políticas de limites, ASCII, API e CLI pertencem ao projeto.
 
 Licença MIT, copyright 2026 Martin. Veja [LICENSE](LICENSE).

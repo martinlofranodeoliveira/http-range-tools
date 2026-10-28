@@ -133,6 +133,8 @@ python checks-offline.py --installed-package "$package_dir"
 
 Wheel construction needs the declared setuptools build dependency plus wheel tooling. Staging/build tooling is separate from execution of the tested package. CI uses fresh runner temporary directories for these steps.
 
+On GitHub-hosted Linux runners, CI explicitly selects `--github-hosted-runner`. That mode checks the runner environment and uses `sudo -n` only for the system bubblewrap namespace bootstrap, addressing Ubuntu's restricted unprivileged loopback setup. It preserves all namespaces, read-only mounts, and network isolation; before importing the package, the tested Python process must have the runner's numeric UID/GID, zero effective capabilities, and `NoNewPrivs=1`. No host sysctl or AppArmor settings are changed. This mode is restricted to ephemeral GitHub-hosted runners; local checks remain unprivileged and never invoke sudo. Namespace and identity options follow the [bubblewrap reference](https://github.com/containers/bubblewrap/blob/v0.9.0/bwrap.xml).
+
 For systems without that Linux sandbox, the portable public suite can also run with `PYTHONPATH=src python -m unittest discover -s tests -v`. This command does not provide the wrapper's isolation. CI exercises Python 3.10, 3.12, and 3.14. Tests include parsing/limit tables, small exhaustive byte selection, huge numerals, type validation, CLI streams/exit codes, and synthetic examples.
 
 MIT license, copyright 2026 Martin. See [LICENSE](LICENSE).
