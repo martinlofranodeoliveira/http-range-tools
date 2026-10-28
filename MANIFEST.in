@@ -1,0 +1,4 @@
+include LICENSE README.md README.pt-BR.md checks-offline.py
+recursive-include examples *.py
+recursive-include tests test_*.py
+include .github/workflows/ci.yml

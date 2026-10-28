@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "http-range-tools"
+version = "0.1.0"
+description = "Offline, bounded HTTP byte Range parsing and slice resolution"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Martin"}]
+dependencies = []
+keywords = ["http", "range", "byte-ranges", "static-files"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Operating System :: OS Independent",
+]
+
+[project.scripts]
+http-range-tools = "http_range_tools.cli:main"
+
+[project.urls]
+Repository = "https://github.com/martinlofranodeoliveira/http-range-tools"
+Issues = "https://github.com/martinlofranodeoliveira/http-range-tools/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+http_range_tools = ["py.typed"]
